@@ -7,6 +7,10 @@
   as only method of Authenticity. It's simple and not hacker proof.
   If you need security, don't use it unless you modify the code
 
+  The program uses a Teensy 2.0 controller simulating the 'serial+kb+mouse+joystick'
+  The teensy sends commands to the PC when a valid card arrives.
+  When the card is removed from the scanner, a different set of commands are sent to the PC.
+
   Copyright (C) 2015 Omer Siar Baysal
 
   This program is free software; you can redistribute it and/or modify
@@ -25,17 +29,12 @@
 
 */
 
+// -------INCLUDES---------------------
 #include <EEPROM.h>     // We are going to read and write PICC's UIDs from/to EEPROM
 #include <SPI.h>        // RC522 Module uses SPI protocol
-#include <MFRC522.h>	// Library for Mifare RC522 Devices
+#include "MFRC522.h"	  // Library for Mifare RC522 Devices
+#include <Metro.h>      //Basic timing library for LED blinking, etc.
 
-/*
-	Instead of a Relay maybe you want to use a servo
-	Servos can lock and unlock door locks too
-	There are examples out there.
- */
-
-// #include <Servo.h>
 
 /*
 	For visualizing whats going on hardware
@@ -46,7 +45,7 @@
 	Mind that if you are going to use common cathode led or
 	just seperate leds, simply comment out #define COMMON_ANODE,
  */
-
+//------ DEFINES ----------------
 #define COMMON_ANODE
 
 #ifdef COMMON_ANODE
@@ -57,13 +56,31 @@
 #define LED_OFF LOW
 #endif
 
-#define redLed 7		// Set Led Pins
-#define greenLed 6
-#define blueLed 5
+// The UART inteface is on pins 7 and 8. Leaving them free for future use (bluetooth)
+#define redLed 9		// Set Led Pins
+#define greenLed 10
+#define blueLed 11
 
-#define relay 4			// Set Relay Pin
-#define wipeB 3			// Button pin for WipeMode
+#define wipeB 6			// Button pin for WipeMode
 
+
+/*
+  We need to define MFRC522's pins and create instance
+  Pin layout should be as follows (on Teensy 2.0):
+  MOSI: Pin 2
+  MISO: Pin 3
+  SCK : Pin 1
+  SS : Pin 0
+  RST : Pin 4 (Configurable)
+  IRQ : Pin 5 - not needed (yet?)
+  look MFRC522 Library for
+  other Arduinos' pin configuration 
+ */
+
+#define SS_PIN 0
+#define RST_PIN 4
+
+//--------VARIABLES ------------
 boolean match = false;          // initialize card match to false
 boolean programMode = false;	// initialize programming mode to false
 
@@ -73,20 +90,7 @@ byte storedCard[4];		// Stores an ID read from EEPROM
 byte readCard[4];		// Stores scanned ID read from RFID Module
 byte masterCard[4];		// Stores master card's ID read from EEPROM
 
-/*
-	We need to define MFRC522's pins and create instance
-	Pin layout should be as follows (on Arduino Uno):
-	MOSI: Pin 11 / ICSP-4
-	MISO: Pin 12 / ICSP-1
-	SCK : Pin 13 / ICSP-3
-	SS : Pin 10 (Configurable)
-	RST : Pin 9 (Configurable)
-	look MFRC522 Library for
-	other Arduinos' pin configuration 
- */
-
-#define SS_PIN 10
-#define RST_PIN 9
+//------ OBJECTS------------------
 MFRC522 mfrc522(SS_PIN, RST_PIN);	// Create MFRC522 instance.
 
 ///////////////////////////////////////// Setup ///////////////////////////////////
@@ -96,9 +100,7 @@ void setup() {
   pinMode(greenLed, OUTPUT);
   pinMode(blueLed, OUTPUT);
   pinMode(wipeB, INPUT_PULLUP);		// Enable pin's pull up resistor
-  pinMode(relay, OUTPUT);
-  //Be careful how relay circuit behave on while resetting or power-cycling your Arduino
-  digitalWrite(relay, HIGH);		// Make sure door is locked
+
   digitalWrite(redLed, LED_OFF);	// Make sure led is off
   digitalWrite(greenLed, LED_OFF);	// Make sure led is off
   digitalWrite(blueLed, LED_OFF);	// Make sure led is off
@@ -111,7 +113,7 @@ void setup() {
   //If you set Antenna Gain to Max it will increase reading distance
   //mfrc522.PCD_SetAntennaGain(mfrc522.RxGain_max);
   
-  Serial.println(F("Access Control v3.3"));   // For debugging purposes
+  Serial.println(F("Access Control v4.0"));   // For debugging purposes
   ShowReaderDetails();	// Show details of PCD - MFRC522 Card Reader details
 
   //Wipe Code if Button Pressed while setup run (powered on) it wipes EEPROM
@@ -245,10 +247,38 @@ void granted (int setDelay) {
   digitalWrite(blueLed, LED_OFF); 	// Turn off blue LED
   digitalWrite(redLed, LED_OFF); 	// Turn off red LED
   digitalWrite(greenLed, LED_ON); 	// Turn on green LED
-  digitalWrite(relay, LOW); 		// Unlock door!
-  delay(setDelay); 					// Hold door lock open for given seconds
-  digitalWrite(relay, HIGH); 		// Relock door
-  delay(1000); 						// Hold green LED on for a second
+  CardArriveActions();
+  delay(1000);  
+}
+
+///////////////////////////////////// Access Actions ///////////////////////////////////////
+void CardArriveActions(void){
+  //keyboard WIN+R for run
+    Keyboard.set_modifier(MODIFIERKEY_GUI);
+    Keyboard.send_now();
+    Keyboard.set_key1(KEY_R);
+    Keyboard.send_now();
+    Keyboard.set_modifier(0);
+    Keyboard.set_key1(0);
+    Keyboard.send_now();
+    //short delay for the gui to load the run window
+    delay(50);
+    Keyboard.println("cmd");
+}
+
+///////////////////////////////////// Access Actions ///////////////////////////////////////
+void CardRemoveActions(void){
+  //keyboard WIN+R for run
+    Keyboard.set_modifier(MODIFIERKEY_GUI);
+    Keyboard.send_now();
+    Keyboard.set_key1(KEY_R);
+    Keyboard.send_now();
+    Keyboard.set_modifier(0);
+    Keyboard.set_key1(0);
+    Keyboard.send_now();
+    //short delay for the gui to load the run window
+    delay(50);
+    Keyboard.print("removed");
 }
 
 ///////////////////////////////////////// Access Denied  ///////////////////////////////////
@@ -322,7 +352,6 @@ void normalModeOn () {
   digitalWrite(blueLed, LED_ON); 	// Blue LED ON and ready to read card
   digitalWrite(redLed, LED_OFF); 	// Make sure Red LED is off
   digitalWrite(greenLed, LED_OFF); 	// Make sure Green LED is off
-  digitalWrite(relay, HIGH); 		// Make sure Door is Locked
 }
 
 //////////////////////////////////////// Read an ID from EEPROM //////////////////////////////
