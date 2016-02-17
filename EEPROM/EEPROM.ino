@@ -33,7 +33,7 @@
 #include <EEPROM.h>     // We are going to read and write PICC's UIDs from/to EEPROM
 #include <SPI.h>        // RC522 Module uses SPI protocol
 #include "MFRC522.h"	  // Library for Mifare RC522 Devices
-#include <Metro.h>      //Basic timing library for LED blinking, etc.
+#include "MyTypes.h"
 
 
 /*
@@ -85,13 +85,14 @@ boolean match = false;          // initialize card match to false
 boolean programMode = false;	// initialize programming mode to false
 
 int successRead;		// Variable integer to keep if we have Successful Read from Reader
+int cardPresent;    // Variable to keep if the card is still present on the reader
 
-byte storedCard[4];		// Stores an ID read from EEPROM
 byte readCard[4];		// Stores scanned ID read from RFID Module
 byte masterCard[4];		// Stores master card's ID read from EEPROM
 
 //------ OBJECTS------------------
 MFRC522 mfrc522(SS_PIN, RST_PIN);	// Create MFRC522 instance.
+record myRecord; //stores the UID and password associated with the card
 
 ///////////////////////////////////////// Setup ///////////////////////////////////
 void setup() {
@@ -164,8 +165,17 @@ void setup() {
       delay(200);
     }
     while (!successRead);                  // Program will not go further while you not get a successful read
-    for ( int j = 0; j < 4; j++ ) {        // Loop 4 times
+    int j = 0;
+    for ( ; j < 4; j++ ) {        // Loop 4 times
       EEPROM.write( 2 + j, readCard[j] );  // Write scanned PICC's UID to EEPROM, start from address 3
+    }
+    for ( ; j < 32; j++) {
+     if (EEPROM.read(2 + j) == 0) {              //If EEPROM address 0
+      // do nothing, already clear, go to the next address in order to save time and reduce writes to EEPROM
+    }
+    else {
+      EEPROM.write(2 + j, 0);       // if not write 0 to clear, it takes 3.3mS
+    }
     }
     EEPROM.write(1, 143);                  // Write to EEPROM we defined Master Card.
     Serial.println(F("Master Card Defined"));
@@ -174,13 +184,26 @@ void setup() {
   Serial.println(F("Master Card's UID"));
   for ( int i = 0; i < 4; i++ ) {          // Read Master Card's UID from EEPROM
     masterCard[i] = EEPROM.read(2 + i);    // Write it to masterCard
-    Serial.print(masterCard[i], HEX);
+    //Serial.print(masterCard[i], HEX);
+    Serial.print("**");
   }
   Serial.println("");
   Serial.println(F("-------------------"));
   Serial.println(F("Everything Ready"));
   Serial.println(F("Waiting PICCs to be scanned"));
   cycleLeds();    // Everything ready lets give user some feedback by cycling leds
+  for (int i = 0; i<100; i++) {
+    /* //Clears EEPROM
+    if (EEPROM.read(i) == 0) {              //If EEPROM address 0
+      // do nothing, already clear, go to the next address in order to save time and reduce writes to EEPROM
+    }
+    else {
+      EEPROM.write(i, 0);       // if not write 0 to clear, it takes 3.3mS
+    } */
+    //Serial.print(EEPROM.read(i),HEX);
+    //Serial.print(" ");
+  }
+  Serial.println("");
 }
 
 
@@ -188,14 +211,14 @@ void setup() {
 void loop () {
   do {
     successRead = getID(); 	// sets successRead to 1 when we get read from reader otherwise 0
-    if (programMode) {
+        if (programMode) {
       cycleLeds();              // Program Mode cycles through RGB waiting to read a new card
     }
     else {
       normalModeOn(); 		// Normal mode, blue Power LED is on, all others are off
     }
-  }
-  while (!successRead); 	//the program will not go further while you not get a successful read
+  }while (!successRead); 	//the program will not go further while you not get a successful read
+  
   if (programMode) {
     if ( isMaster(readCard) ) { //If master card scanned again exit program mode
       Serial.println(F("Master Card Scanned"));
@@ -212,7 +235,13 @@ void loop () {
       }
       else {                    // If scanned card is not known add it
         Serial.println(F("I do not know this PICC, adding..."));
-        writeID(readCard);
+        Serial.println(F("Please enter your login password:"));
+        Serial.setTimeout(10000); //10 second time out.
+        String pwStr = Serial.readStringUntil('\n');
+        const char * c = pwStr.c_str();
+        strncpy(myRecord.pw, c, strlen(c));
+        myRecord.pwLength = strlen(c);
+        writeID(readCard,&myRecord);
         Serial.println(F("-----------------------------"));
       }
     }
@@ -232,18 +261,25 @@ void loop () {
     else {
       if ( findID(readCard) ) {	// If not, see if the card is in the EEPROM
         Serial.println(F("Welcome, You shall pass"));
-        granted(300);        	// Open the door lock for 300 ms
+        granted();
+        cardPresent = true;
       }
       else {			// If not, show that the ID was not valid
         Serial.println(F("You shall not pass"));
-        denied();
+        cardPresent = false;
       }
     }
+  }
+  
+  if (!programMode && cardPresent){ //we we get here and we are not in programming mode, then a valid card is present. Wait here
+    do{
+      cardPresent = checkID();
+    }while(cardPresent);
   }
 }
 
 /////////////////////////////////////////  Access Granted    ///////////////////////////////////
-void granted (int setDelay) {
+void granted (void) {
   digitalWrite(blueLed, LED_OFF); 	// Turn off blue LED
   digitalWrite(redLed, LED_OFF); 	// Turn off red LED
   digitalWrite(greenLed, LED_ON); 	// Turn on green LED
@@ -253,32 +289,42 @@ void granted (int setDelay) {
 
 ///////////////////////////////////// Access Actions ///////////////////////////////////////
 void CardArriveActions(void){
-  //keyboard WIN+R for run
-    Keyboard.set_modifier(MODIFIERKEY_GUI);
-    Keyboard.send_now();
-    Keyboard.set_key1(KEY_R);
-    Keyboard.send_now();
-    Keyboard.set_modifier(0);
-    Keyboard.set_key1(0);
-    Keyboard.send_now();
-    //short delay for the gui to load the run window
-    delay(50);
-    Keyboard.println("cmd");
+  // press and hold CTRL
+  Keyboard.set_modifier(MODIFIERKEY_CTRL);
+  Keyboard.send_now();
+  
+  // press ALT while still holding CTRL
+  Keyboard.set_modifier(MODIFIERKEY_CTRL | MODIFIERKEY_ALT);
+  Keyboard.send_now();
+  
+  // press DELETE, while CLTR and ALT still held
+  Keyboard.set_key1(KEY_DELETE);
+  Keyboard.send_now();
+  
+  // release all the keys at the same instant
+  Keyboard.set_modifier(0);
+  Keyboard.set_key1(0);
+  Keyboard.send_now();
+  //short delay for the gui to load the login window
+  delay(200);
+  //enter the password (this needs to be stored along with the card details!)
+  Keyboard.println(myRecord.pw);
+  
 }
 
-///////////////////////////////////// Access Actions ///////////////////////////////////////
+///////////////////////////////////// Access Finished Actions ///////////////////////////////
 void CardRemoveActions(void){
   //keyboard WIN+R for run
     Keyboard.set_modifier(MODIFIERKEY_GUI);
     Keyboard.send_now();
-    Keyboard.set_key1(KEY_R);
+    Keyboard.set_key1(KEY_L);
     Keyboard.send_now();
     Keyboard.set_modifier(0);
     Keyboard.set_key1(0);
     Keyboard.send_now();
     //short delay for the gui to load the run window
     delay(50);
-    Keyboard.print("removed");
+    Serial.println("Goodbye!");
 }
 
 ///////////////////////////////////////// Access Denied  ///////////////////////////////////
@@ -305,11 +351,44 @@ int getID() {
   Serial.println(F("Scanned PICC's UID:"));
   for (int i = 0; i < 4; i++) {  //
     readCard[i] = mfrc522.uid.uidByte[i];
-    Serial.print(readCard[i], HEX);
+    //Serial.print(readCard[i], HEX);
+    Serial.print("**");
   }
   Serial.println("");
   mfrc522.PICC_HaltA(); // Stop reading
   return 1;
+}
+
+///////////////////////////////////////// Check PICC's UID ///////////////////////////////////
+int checkID(void) {
+  byte bufferATQA[2]; //buffer to store the reply from the controller
+  byte bufferSize = sizeof(bufferATQA); //size of the buffer
+  MFRC522::StatusCode result = mfrc522.PICC_WakeupA(bufferATQA, &bufferSize); //wake up the reader
+
+  if (mfrc522.PICC_ReadCardSerial()){ //read the serial of the card
+    //check if the serial matches the current valid ID.
+    //Serial.println(F("Scanned PICC still there:"));
+    for (int i = 0; i < 4; i++) {  //
+      if (readCard[i] != mfrc522.uid.uidByte[i]){
+        //miss-matched ID. wrong card!
+        mfrc522.PICC_HaltA(); // Stop reading
+        if (cardPresent){
+          CardRemoveActions();
+        }
+        return 0;
+      }
+    }
+    cardPresent = true;
+    mfrc522.PICC_HaltA(); // Stop reading
+    return 1;
+  }
+            
+  else {
+    if (cardPresent){
+      CardRemoveActions();
+    }
+    return 0; //card removed - no serial can be read
+  }
 }
 
 void ShowReaderDetails() {
@@ -356,24 +435,73 @@ void normalModeOn () {
 
 //////////////////////////////////////// Read an ID from EEPROM //////////////////////////////
 void readID( int number ) {
-  int start = (number * 4 ) + 2; 		// Figure out starting position
-  for ( int i = 0; i < 4; i++ ) { 		// Loop 4 times to get the 4 Bytes
-    storedCard[i] = EEPROM.read(start + i); 	// Assign values read from EEPROM to array
+  int start = (number * 32 ) + 2;     // Figure out starting position
+    
+  //Serial.println(start,DEC);
+  
+  int i = 0;
+  for ( ; i < 4; i++ ) {    // Loop 4 times to get the 4 Bytes
+    myRecord.storedCard[i] = EEPROM.read(start + i);   // Assign values read from EEPROM to array
+    //Serial.print(myRecord.storedCard[i], HEX);
+    //Serial.print(" ");
   }
+  //Serial.println(" ");
+  myRecord.pwLength = EEPROM.read(start + i);
+  //Serial.print(myRecord.pwLength, HEX);
+  //Serial.println(" ");
+  i++;
+  for ( ; i < 32; i++){
+    myRecord.pw[i-5] = EEPROM.read(start + i);
+  }
+  for (int ii = 0; ii<27 ; ii++){
+    //Serial.print(myRecord.pw[ii], HEX);
+    //Serial.print(" ");
+  }
+  //Serial.println("");
+
+  
 }
 
 ///////////////////////////////////////// Add ID to EEPROM   ///////////////////////////////////
-void writeID( byte a[] ) {
+void writeID( byte a[] , record* p) {
   if ( !findID( a ) ) { 		// Before we write to the EEPROM, check to see if we have seen this card before!
+    
     int num = EEPROM.read(0); 		// Get the numer of used spaces, position 0 stores the number of ID cards
-    int start = ( num * 4 ) + 6; 	// Figure out where the next slot starts
+    int start = ( num * 32 ) + 34; 	// Figure out where the next slot starts
     num++; 								// Increment the counter by one
     EEPROM.write( 0, num ); 		// Write the new count to the counter
-    for ( int j = 0; j < 4; j++ ) { 	// Loop 4 times
+    int j = 0;
+    for (  ; j < 4; j++ ) { 	// Loop 4 times
       EEPROM.write( start + j, a[j] ); 	// Write the array values to EEPROM in the right position
     }
+    
+    EEPROM.write( start + j, (byte)p->pwLength ); // write the password size to the next EEPROM slot
+    j++; //increment the memory location by one byte
+    
+    int kk = 0; //a counter to move the PW string in to memory
+    for (  ; j < 32; j++ ) {   // Loop 27 times
+      if (kk < p->pwLength){
+        EEPROM.write( start + j, p->pw[kk] );  // Write the array values to EEPROM in the right position
+        kk++;
+      }
+      else{
+        if (EEPROM.read(start + j) == 0) {              //If EEPROM address 0
+          // do nothing, already clear, go to the next address in order to save time and reduce writes to EEPROM
+        }
+        else {
+          EEPROM.write(start + j, 0);
+        }
+      }
+    }
     successWrite();
-	Serial.println(F("Succesfully added ID record to EEPROM"));
+  	Serial.println(F("Succesfully added ID record to EEPROM"));
+    for (int ii = 0; ii<32 ; ii++){
+      Serial.print(EEPROM.read(start + ii), HEX);
+      Serial.print(" ");
+    }
+    
+    Serial.println("");
+    
   }
   else {
     failedWrite();
@@ -390,20 +518,20 @@ void deleteID( byte a[] ) {
   else {
     int num = EEPROM.read(0); 	// Get the numer of used spaces, position 0 stores the number of ID cards
     int slot; 			// Figure out the slot number of the card
-    int start;			// = ( num * 4 ) + 6; // Figure out where the next slot starts
+    int mstart;			// = ( num * 32 ) + 2; // Figure out where the next slot starts (start is a dedicated value)
     int looping; 		// The number of times the loop repeats
     int j;
     int count = EEPROM.read(0); // Read the first Byte of EEPROM that stores number of cards
     slot = findIDSLOT( a ); 	// Figure out the slot number of the card to delete
-    start = (slot * 4) + 2;
-    looping = ((num - slot) * 4);
+    mstart = (slot * 32) + 2; //
+    looping = ((num - slot) * 32);
     num--; 			// Decrement the counter by one
     EEPROM.write( 0, num ); 	// Write the new count to the counter
     for ( j = 0; j < looping; j++ ) { 				// Loop the card shift times
-      EEPROM.write( start + j, EEPROM.read(start + 4 + j)); 	// Shift the array values to 4 places earlier in the EEPROM
+      EEPROM.write( mstart + j, EEPROM.read(mstart + 32 + j)); 	// Shift the array values to 32 places earlier in the EEPROM
     }
-    for ( int k = 0; k < 4; k++ ) { 				// Shifting loop
-      EEPROM.write( start + j + k, 0);
+    for ( int k = 0; k < 32; k++ ) { 				// Shifting loop
+      EEPROM.write( mstart + j + k, 0);
     }
     successDelete();
 	Serial.println(F("Succesfully removed ID record from EEPROM"));
@@ -431,7 +559,7 @@ int findIDSLOT( byte find[] ) {
   int count = EEPROM.read(0); 			// Read the first Byte of EEPROM that
   for ( int i = 1; i <= count; i++ ) { 		// Loop once for each EEPROM entry
     readID(i); 								// Read an ID from EEPROM, it is stored in storedCard[4]
-    if ( checkTwo( find, storedCard ) ) { 	// Check to see if the storedCard read from EEPROM
+    if ( checkTwo( find, myRecord.storedCard ) ) { 	// Check to see if the storedCard read from EEPROM
       // is the same as the find[] ID card passed
       return i; 				// The slot number of the card
       break; 					// Stop looking we found it
@@ -444,7 +572,7 @@ boolean findID( byte find[] ) {
   int count = EEPROM.read(0);			// Read the first Byte of EEPROM that
   for ( int i = 1; i <= count; i++ ) {  	// Loop once for each EEPROM entry
     readID(i); 					// Read an ID from EEPROM, it is stored in storedCard[4]
-    if ( checkTwo( find, storedCard ) ) {  	// Check to see if the storedCard read from EEPROM
+    if ( checkTwo( find, myRecord.storedCard ) ) {  	// Check to see if the storedCard read from EEPROM
       return true;
       break; 	// Stop looking we found it
     }
