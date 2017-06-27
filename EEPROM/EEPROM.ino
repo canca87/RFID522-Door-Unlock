@@ -33,36 +33,25 @@
 #include <EEPROM.h>     // We are going to read and write PICC's UIDs from/to EEPROM
 #include <SPI.h>        // RC522 Module uses SPI protocol
 #include "MFRC522.h"	  // Library for Mifare RC522 Devices
-#include "MyTypes.h"
-
+#include "MyTypes.h"    // Structs for storing passwords and card links
 
 /*
 	For visualizing whats going on hardware
 	we need some leds and
 	to control door lock a relay and a wipe button
 	(or some other hardware)
-	Used common anode led,digitalWriting HIGH turns OFF led
+	Used common cathode led,digitalWriting HIGH turns ON led
 	Mind that if you are going to use common cathode led or
-	just seperate leds, simply comment out #define COMMON_ANODE,
+	just seperate leds, reverse the below defines:
  */
 //------ DEFINES ----------------
-#define COMMON_ANODE
-
-#ifdef COMMON_ANODE
-#define LED_ON LOW
-#define LED_OFF HIGH
-#else
 #define LED_ON HIGH
 #define LED_OFF LOW
-#endif
 
 // The UART inteface is on pins 7 and 8. Leaving them free for future use (bluetooth)
-#define redLed 9		// Set Led Pins
-#define greenLed 10
-#define blueLed 11
-
-#define wipeB 6			// Button pin for WipeMode
-
+#define redLed 10		// Set Led Pins
+#define greenLed 13
+#define blueLed 22
 
 /*
   We need to define MFRC522's pins and create instance
@@ -100,14 +89,13 @@ void setup() {
   pinMode(redLed, OUTPUT);
   pinMode(greenLed, OUTPUT);
   pinMode(blueLed, OUTPUT);
-  pinMode(wipeB, INPUT_PULLUP);		// Enable pin's pull up resistor
 
   digitalWrite(redLed, LED_OFF);	// Make sure led is off
   digitalWrite(greenLed, LED_OFF);	// Make sure led is off
   digitalWrite(blueLed, LED_OFF);	// Make sure led is off
 
   //Protocol Configuration
-  Serial.begin(9600);	 // Initialize serial communications with PC
+  Serial.begin(9600);	 // Initialize serial communications with PC (usb speed, baud is irrelevant)
   SPI.begin();           // MFRC522 Hardware uses SPI protocol
   mfrc522.PCD_Init();    // Initialize MFRC522 Hardware
   
@@ -117,39 +105,6 @@ void setup() {
   Serial.println(F("Access Control v4.0"));   // For debugging purposes
   ShowReaderDetails();	// Show details of PCD - MFRC522 Card Reader details
 
-  //Wipe Code if Button Pressed while setup run (powered on) it wipes EEPROM
-  if (digitalRead(wipeB) == LOW) {	// when button pressed pin should get low, button connected to ground
-    digitalWrite(redLed, LED_ON);	// Red Led stays on to inform user we are going to wipe
-    Serial.println(F("Wipe Button Pressed"));
-    Serial.println(F("You have 5 seconds to Cancel"));
-    Serial.println(F("This will be remove all records and cannot be undone"));
-    delay(5000);                        // Give user enough time to cancel operation
-    if (digitalRead(wipeB) == LOW) {    // If button still be pressed, wipe EEPROM
-      Serial.println(F("Starting Wiping EEPROM"));
-      for (int x = 0; x < EEPROM.length(); x = x + 1) {    //Loop end of EEPROM address
-        if (EEPROM.read(x) == 0) {              //If EEPROM address 0
-          // do nothing, already clear, go to the next address in order to save time and reduce writes to EEPROM
-        }
-        else {
-          EEPROM.write(x, 0); 			// if not write 0 to clear, it takes 3.3mS
-        }
-      }
-      Serial.println(F("EEPROM Successfully Wiped"));
-      digitalWrite(redLed, LED_OFF); 	// visualize successful wipe
-      delay(200);
-      digitalWrite(redLed, LED_ON);
-      delay(200);
-      digitalWrite(redLed, LED_OFF);
-      delay(200);
-      digitalWrite(redLed, LED_ON);
-      delay(200);
-      digitalWrite(redLed, LED_OFF);
-    }
-    else {
-      Serial.println(F("Wiping Cancelled"));
-      digitalWrite(redLed, LED_OFF);
-    }
-  }
   // Check if master card defined, if not let user choose a master card
   // This also useful to just redefine Master Card
   // You can keep other EEPROM records just write other than 143 to EEPROM address 1
@@ -171,11 +126,11 @@ void setup() {
     }
     for ( ; j < 32; j++) {
      if (EEPROM.read(2 + j) == 0) {              //If EEPROM address 0
-      // do nothing, already clear, go to the next address in order to save time and reduce writes to EEPROM
-    }
-    else {
-      EEPROM.write(2 + j, 0);       // if not write 0 to clear, it takes 3.3mS
-    }
+        // do nothing, already clear, go to the next address in order to save time and reduce writes to EEPROM
+      }
+      else {
+        EEPROM.write(2 + j, 0);       // if not write 0 to clear, it takes 3.3mS
+      }
     }
     EEPROM.write(1, 143);                  // Write to EEPROM we defined Master Card.
     Serial.println(F("Master Card Defined"));
@@ -192,18 +147,13 @@ void setup() {
   Serial.println(F("Everything Ready"));
   Serial.println(F("Waiting PICCs to be scanned"));
   cycleLeds();    // Everything ready lets give user some feedback by cycling leds
+  /* //Use this for debug: dumps the contents of the EEPROM to the serial port (only first 100 bytes)
   for (int i = 0; i<100; i++) {
-    /* //Clears EEPROM
-    if (EEPROM.read(i) == 0) {              //If EEPROM address 0
-      // do nothing, already clear, go to the next address in order to save time and reduce writes to EEPROM
-    }
-    else {
-      EEPROM.write(i, 0);       // if not write 0 to clear, it takes 3.3mS
-    } */
-    //Serial.print(EEPROM.read(i),HEX);
-    //Serial.print(" ");
+    Serial.print(EEPROM.read(i),HEX);
+    Serial.print(" ");
   }
   Serial.println("");
+  */
 }
 
 
@@ -289,6 +239,8 @@ void granted (void) {
 
 ///////////////////////////////////// Access Actions ///////////////////////////////////////
 void CardArriveActions(void){
+  Serial.println("Access Granted");
+  
   // press and hold CTRL
   Keyboard.set_modifier(MODIFIERKEY_CTRL);
   Keyboard.send_now();
@@ -306,7 +258,7 @@ void CardArriveActions(void){
   Keyboard.set_key1(0);
   Keyboard.send_now();
   //short delay for the gui to load the login window
-  delay(200);
+  delay(500);
   //enter the password (this needs to be stored along with the card details!)
   Keyboard.println(myRecord.pw);
   
@@ -314,6 +266,8 @@ void CardArriveActions(void){
 
 ///////////////////////////////////// Access Finished Actions ///////////////////////////////
 void CardRemoveActions(void){
+  Serial.println("Access Complete. Goodbye!");
+  
   //keyboard WIN+R for run
     Keyboard.set_modifier(MODIFIERKEY_GUI);
     Keyboard.send_now();
@@ -325,19 +279,20 @@ void CardRemoveActions(void){
     //short delay for the gui to load the run window
     delay(50);
     Serial.println("Goodbye!");
+    
 }
 
 ///////////////////////////////////////// Access Denied  ///////////////////////////////////
-void denied() {
+void denied(void) {
+  Serial.println("Access Denied");
   digitalWrite(greenLed, LED_OFF); 	// Make sure green LED is off
   digitalWrite(blueLed, LED_OFF); 	// Make sure blue LED is off
   digitalWrite(redLed, LED_ON); 	// Turn on red LED
   delay(1000);
 }
 
-
 ///////////////////////////////////////// Get PICC's UID ///////////////////////////////////
-int getID() {
+int getID(void) {
   // Getting ready for Reading PICCs
   if ( ! mfrc522.PICC_IsNewCardPresent()) { //If a new PICC placed to RFID reader continue
     return 0;
@@ -391,7 +346,7 @@ int checkID(void) {
   }
 }
 
-void ShowReaderDetails() {
+void ShowReaderDetails(void) {
 	// Get the MFRC522 software version
 	byte v = mfrc522.PCD_ReadRegister(mfrc522.VersionReg);
 	Serial.print(F("MFRC522 Software Version: 0x"));
@@ -411,7 +366,7 @@ void ShowReaderDetails() {
 }
 
 ///////////////////////////////////////// Cycle Leds (Program Mode) ///////////////////////////////////
-void cycleLeds() {
+void cycleLeds(void) {
   digitalWrite(redLed, LED_OFF); 	// Make sure red LED is off
   digitalWrite(greenLed, LED_ON); 	// Make sure green LED is on
   digitalWrite(blueLed, LED_OFF); 	// Make sure blue LED is off
@@ -427,7 +382,7 @@ void cycleLeds() {
 }
 
 //////////////////////////////////////// Normal Mode Led  ///////////////////////////////////
-void normalModeOn () {
+void normalModeOn (void) {
   digitalWrite(blueLed, LED_ON); 	// Blue LED ON and ready to read card
   digitalWrite(redLed, LED_OFF); 	// Make sure Red LED is off
   digitalWrite(greenLed, LED_OFF); 	// Make sure Green LED is off
